@@ -39,6 +39,10 @@ jobs:
           pulls = json.loads(Path('/tmp/pulls.json').read_text(encoding='utf-8'))
           pulls.sort(key=lambda item: item['number'])
 
+          if not pulls:
+              print('No open pull requests; skip report generation')
+              raise SystemExit(0)
+
           now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
           date = now.strftime('%Y-%m-%d')
           repo = os.environ['REPO']

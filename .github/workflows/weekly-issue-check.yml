@@ -38,6 +38,10 @@ jobs:
           issues = json.loads(Path('/tmp/issues.json').read_text(encoding='utf-8'))
           issues.sort(key=lambda item: item['number'])
 
+          if not issues:
+              print('No open issues; skip report generation')
+              raise SystemExit(0)
+
           now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
           date = now.strftime('%Y-%m-%d')
           repo = os.environ['REPO']
