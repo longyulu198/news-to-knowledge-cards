@@ -1,0 +1,4 @@
+interface:
+  display_name: "新闻知识点提炼"
+  short_description: "把文章转成连贯凝练的知识点卡片，说明意义、例子与自测问题。"
+  default_prompt: "用 $news-knowledge-extract 把下面的文章整理成至少 5 张连贯的知识点卡片。"
