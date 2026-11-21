@@ -1,0 +1,120 @@
+name: Weekly pull request check
+
+on:
+  schedule:
+    - cron: '0 4 * * 4'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  check-pulls:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch open pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr list --repo "$REPO" --state open --limit 100 \
+            --json number,title,body,url,author,files,additions,deletions,labels,baseRefName,headRefName,mergeable,reviewDecision,statusCheckRollup,updatedAt \
+            > /tmp/pulls.json
+
+      - name: Generate pull request report
+        env:
+          TZ: Asia/Shanghai
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          pulls = json.loads(Path('/tmp/pulls.json').read_text(encoding='utf-8'))
+          pulls.sort(key=lambda item: item['number'])
+
+          now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+          date = now.strftime('%Y-%m-%d')
+          repo = os.environ['REPO']
+          report_dir = Path('pull')
+          report_dir.mkdir(exist_ok=True)
+          report_path = report_dir / f'{date}-{len(pulls)}pullrequests.md'
+
+          def describe_files(item):
+              files = item.get('files') or []
+              if not files:
+                  return '未在 PR 中列出具体文件。'
+              parts = []
+              for f in files[:20]:
+                  parts.append(f"`{f.get('path', '')}` (+{f.get('additions', 0)}/-{f.get('deletions', 0)})")
+              if len(files) > 20:
+                  parts.append(f'……另有 {len(files) - 20} 个文件')
+              return '；'.join(parts)
+
+          def merge_advice(item):
+              reasons = []
+              if item.get('mergeable') == 'CONFLICTING':
+                  reasons.append('存在合并冲突')
+              if item.get('reviewDecision') == 'CHANGES_REQUESTED':
+                  reasons.append('有审查者请求修改')
+              rollup = item.get('statusCheckRollup') or []
+              failed = [c for c in rollup if str(c.get('conclusion', '')).lower() in ('failure', 'error', 'timed_out')]
+              if failed:
+                  reasons.append('存在未通过的状态检查')
+              if reasons:
+                  return '暂缓合并：' + '；'.join(reasons), '；'.join(reasons)
+              return '值得合并到 main（未发现冲突、阻断性审查意见或失败检查）', '无'
+
+          lines = [
+              f'# {date} 待处理 Pull Requests（{len(pulls)} 个）',
+              '',
+              f'- 检查时间：{now.strftime("%Y-%m-%d %H:%M:%S")}（北京时间）',
+              f'- 仓库：{repo}',
+              f'- Open PR 数量：{len(pulls)}',
+              '',
+          ]
+
+          if not pulls:
+              lines += ['本次检查未发现 open pull request。', '']
+          else:
+              for item in pulls:
+                  advice, suggestion = merge_advice(item)
+                  labels = ', '.join(label['name'] for label in item.get('labels', [])) or '无'
+                  body = (item.get('body') or '').strip() or '未在 PR 正文中描述。'
+                  author = (item.get('author') or {}).get('login', '未知')
+                  lines += [
+                      f'## #{item["number"]} {item["title"]}',
+                      '',
+                      f'- 链接：{item["url"]}',
+                      f'- 作者：{author}',
+                      f'- 分支：`{item.get("headRefName", "")}` → `{item.get("baseRefName", "")}`',
+                      f'- 修改了什么：{describe_files(item)}',
+                      f'- 解决了什么问题：{body}',
+                      f'- 是否值得合并到 main：{advice}',
+                      f'- 修改建议：{suggestion}',
+                      f'- 标签：{labels}',
+                      f'- 最近更新：{item.get("updatedAt", "")}',
+                      '',
+                  ]
+
+          report_path.write_text('\n'.join(lines), encoding='utf-8')
+          print(f'Generated {report_path}')
+          PY
+
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pull
+          if git diff --cached --quiet; then
+            echo "No pull request report changes to commit"
+          else
+            git commit -m "chore: weekly pull request check report"
+            git push
+          fi
