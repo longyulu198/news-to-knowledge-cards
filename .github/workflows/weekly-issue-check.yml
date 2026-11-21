@@ -1,0 +1,105 @@
+name: Weekly issue check
+
+on:
+  schedule:
+    - cron: '0 4 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  check-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch open issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh issue list --repo "$REPO" --state open --limit 100 \
+            --json number,title,body,url,labels,updatedAt > /tmp/issues.json
+
+      - name: Generate issue report
+        env:
+          TZ: Asia/Shanghai
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          issues = json.loads(Path('/tmp/issues.json').read_text(encoding='utf-8'))
+          issues.sort(key=lambda item: item['number'])
+
+          now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+          date = now.strftime('%Y-%m-%d')
+          repo = os.environ['REPO']
+          report_dir = Path('issue')
+          report_dir.mkdir(exist_ok=True)
+          report_path = report_dir / f'{date}-{len(issues)}issues.md'
+
+          def section(body, keywords):
+              lines = (body or '').splitlines()
+              for index, line in enumerate(lines):
+                  stripped = line.strip()
+                  if any(keyword in stripped for keyword in keywords):
+                      collected = []
+                      for candidate in lines[index + 1:]:
+                          text = candidate.strip()
+                          if not text:
+                              continue
+                          if text.startswith('#') or (text.startswith('**') and text.endswith('**')):
+                              break
+                          collected.append(text)
+                      return ' '.join(collected) if collected else '待维护者补充'
+              return '待维护者补充'
+
+          lines = [
+              f'# {date} 待维护 Issues（{len(issues)} 个）',
+              '',
+              f'- 检查时间：{now.strftime("%Y-%m-%d %H:%M:%S")}（北京时间）',
+              f'- 仓库：{repo}',
+              f'- Open Issue 数量：{len(issues)}',
+              '',
+          ]
+
+          if not issues:
+              lines += ['本次检查未发现需要处理的 open issue。', '']
+          else:
+              for item in issues:
+                  labels = ', '.join(label['name'] for label in item.get('labels', [])) or '无'
+                  body = (item.get('body') or '').strip() or '未在 issue 正文中描述。'
+                  lines += [
+                      f'## #{item["number"]} {item["title"]}',
+                      '',
+                      f'- 链接：{item["url"]}',
+                      f'- 什么问题：{body}',
+                      f'- 修复/修改建议：{section(body, ["修复建议", "修改建议", "建议"])}',
+                      f'- 验收标准：{section(body, ["验收标准", "验收", "完成标准"])}',
+                      f'- 标签：{labels}',
+                      f'- 最近更新：{item.get("updatedAt", "")}',
+                      '',
+                  ]
+
+          report_path.write_text('\n'.join(lines), encoding='utf-8')
+          print(f'Generated {report_path}')
+          PY
+
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add issue
+          if git diff --cached --quiet; then
+            echo "No issue report changes to commit"
+          else
+            git commit -m "chore: weekly issue check report"
+            git push
+          fi
